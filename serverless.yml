@@ -1,0 +1,133 @@
+service: yuji-book-cafe-pos
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  stage: ${opt:stage, 'dev'}
+  region: ${opt:region, 'ap-south-1'}  # Mumbai region
+  timeout: 29  # API Gateway max timeout (seconds)
+  memorySize: 512  # MB - adjust based on performance testing
+  
+  # Environment variables
+  environment:
+    NODE_ENV: ${self:provider.stage}
+    SUPABASE_URL: ${env:SUPABASE_URL, 'https://ssdlzespwcbteafrwppk.supabase.co'}
+    SUPABASE_PUBLISHABLE_KEY: ${env:SUPABASE_PUBLISHABLE_KEY, 'YOUR_PUBLISHABLE_KEY'}
+    SUPABASE_SERVICE_ROLE_KEY: ${env:SUPABASE_SERVICE_ROLE_KEY, 'YOUR_SERVICE_ROLE_KEY'}
+    JWT_SECRET: ${env:JWT_SECRET, 'dev-secret-yuji-2026'}
+  
+  # IAM Role permissions
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action:
+            - logs:CreateLogGroup
+            - logs:CreateLogStream
+            - logs:PutLogEvents
+          Resource: 'arn:aws:logs:*:*:*'
+  
+  # API Gateway configuration
+  httpApi:
+    cors:
+      allowedOrigins:
+        - http://localhost:5173
+        - https://pos-cafe.emacrontechnologies.com
+      allowedHeaders:
+        - Content-Type
+        - Authorization
+      allowedMethods:
+        - GET
+        - POST
+        - PUT
+        - PATCH
+        - DELETE
+        - OPTIONS
+      allowCredentials: true
+
+functions:
+  api:
+    handler: lambda.handler
+    description: Yu-Ji Book Café POS API - All routes in one Lambda
+    events:
+      - http:
+          path: /api/{proxy+}
+          method: ANY
+          cors:
+            origins:
+              - http://localhost:5173
+              - http://localhost:5174
+              - https://pos-cafe.emacrontechnologies.com
+            headers:
+              - Content-Type
+              - Authorization
+              - X-Amz-Date
+              - X-Api-Key
+              - X-Amz-Security-Token
+            allowCredentials: true
+      - http:
+          path: /api
+          method: ANY
+          cors:
+            origins:
+              - http://localhost:5173
+              - http://localhost:5174
+              - https://pos-cafe.emacrontechnologies.com
+            headers:
+              - Content-Type
+              - Authorization
+              - X-Amz-Date
+              - X-Api-Key
+              - X-Amz-Security-Token
+            allowCredentials: true
+    # Provisioned concurrency (uncomment for production to reduce cold starts)
+    # provisionedConcurrency: 1
+
+plugins:
+  - serverless-dotenv-plugin
+  - serverless-offline
+
+custom:
+  serverless-offline:
+    httpPort: 3001
+    host: 0.0.0.0
+    noPrependStageInUrl: true
+
+# Package configuration
+package:
+  individually: false
+  patterns:
+    - '!node_modules/aws-sdk/**'
+    - '!.git/**'
+    - '!.gitignore'
+    - '!README.md'
+    - '!migration-backup/**'
+    - '!data/**'
+    - '!*.log'
+    - '!.env.example'
+    - '!nodemon.json'
+    - '!cleanup-today.js'
+    - '!migrate.js'
+    - 'utils/**'
+    - '!utils/fileUtils.js'
+    - '!utils/hashGenerator.js'
+    - '!utils/manageUsers.js'
+
+# TODO: Production deployment checklist
+# ☐ 1. Set up AWS credentials (aws configure)
+# ☐ 2. Move secrets to AWS Systems Manager Parameter Store or Secrets Manager
+# ☐ 3. Configure production domain in API Gateway
+# ☐ 4. Enable CloudWatch logs and monitoring
+# ☐ 5. Set up CloudWatch alarms for errors/latency
+# ☐ 6. Configure VPC (if needed for security)
+# ☐ 7. Enable X-Ray tracing for debugging
+# ☐ 8. Test cold start performance and optimize
+# ☐ 9. Enable provisioned concurrency for production
+# ☐ 10. Set up CI/CD pipeline (GitHub Actions/AWS CodePipeline)
+# ☐ 11. Configure custom domain with Route53
+# ☐ 12. Set up WAF rules for API protection
+# ☐ 13. Enable API throttling and rate limiting
+# ☐ 14. Create separate stages: dev, staging, production
+# ☐ 15. Reduce JSON payload limit from 10MB to 6MB in server.js
