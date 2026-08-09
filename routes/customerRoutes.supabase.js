@@ -704,8 +704,15 @@ router.post("/:id/orders", async (req, res) => {
 
     if (updateError) throw updateError;
 
-    // TODO: Deduct inventory (if auto-deduction is enabled)
-    // tryDeductInventory(items);
+    // Auto-deduct inventory based on recipes (non-blocking — order always succeeds)
+    const { tryDeductInventorySupabase } = require("../utils/supabaseInventoryHelper");
+    tryDeductInventorySupabase(supabase, items).then(({ warnings }) => {
+      if (warnings && warnings.length > 0) {
+        console.warn("⚠️ Inventory deduction warnings:", warnings);
+      }
+    }).catch(err => {
+      console.error("❌ Inventory deduction failed (non-blocking):", err.message);
+    });
 
     res.json(transformToCamelCase(updatedCustomer));
   } catch (err) {

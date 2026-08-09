@@ -225,8 +225,15 @@ router.post("/", async (req, res) => {
 
     if (orderError) throw orderError;
 
-    // TODO: Try to deduct inventory (non-blocking)
-    // const { warnings } = await tryDeductInventory(items);
+    // Auto-deduct inventory based on recipes (non-blocking — order always succeeds)
+    const { tryDeductInventorySupabase } = require("../utils/supabaseInventoryHelper");
+    tryDeductInventorySupabase(supabase, items).then(({ warnings }) => {
+      if (warnings && warnings.length > 0) {
+        console.warn("⚠️ Inventory deduction warnings:", warnings);
+      }
+    }).catch(err => {
+      console.error("❌ Inventory deduction failed (non-blocking):", err.message);
+    });
 
     res.status(201).json({
       success: true,

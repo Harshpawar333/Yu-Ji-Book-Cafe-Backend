@@ -29,7 +29,8 @@ router.get("/full-data", async (req, res) => {
       wasteRecordsResult,
       alertsResult,
       inventoryUsersResult,
-      menuItemsResult
+      menuItemsResult,
+      purchaseOrderItemsResult
     ] = await Promise.all([
       supabase.from("inventory_settings").select("*").single(),
       supabase.from("categories").select("*"),
@@ -43,7 +44,8 @@ router.get("/full-data", async (req, res) => {
       supabase.from("waste_records").select("*").order("date", { ascending: false }).limit(50),
       supabase.from("inventory_alerts").select("*").eq("is_resolved", false),
       supabase.from("inventory_users").select("*"),
-      supabase.from("menu_items").select("*")
+      supabase.from("menu_items").select("*"),
+      supabase.from("purchase_order_items").select("*")
     ]);
 
     // Check for errors
@@ -166,7 +168,15 @@ router.get("/full-data", async (req, res) => {
         expectedDelivery: po.expected_delivery,
         notes: po.notes,
         status: po.status,
-        totalAmount: po.total_amount
+        totalAmount: po.total_amount,
+        items: (purchaseOrderItemsResult?.data || [])
+          .filter(poi => poi.purchase_order_id === po.id)
+          .map(poi => ({
+            ingredientId: poi.ingredient_id,
+            quantity: poi.quantity,
+            unitCost: poi.unit_cost,
+            totalCost: poi.total_cost
+          }))
       })),
       wasteRecords: (wasteRecordsResult.data || []).map(w => ({
         id: w.id,
