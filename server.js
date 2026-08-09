@@ -20,6 +20,7 @@ const membershipRoutes = require("./routes/membershipRoutes.supabase"); // Membe
 // const inventoryIntegrationRoutes = require("./routes/inventoryIntegrationRoutes");
 
 const authRoutes = require("./routes/auth");
+const userRoutes = require("./routes/userRoutes");
 
 // Import middleware
 const errorHandler = require("./middlewares/errorHandler");
@@ -67,6 +68,7 @@ app.use("/api/inventory", inventoryRoutes); // ✅ Now Supabase-based!
 app.use("/api/memberships", membershipRoutes); // ✅ Membership + RFID
 // app.use("/api/integration", inventoryIntegrationRoutes); // POS-Inventory integration
 app.use("/api", authRoutes);
+app.use("/api/users", userRoutes);
 
 // Health check with database status
 app.get("/api/health", async (req, res) => {
