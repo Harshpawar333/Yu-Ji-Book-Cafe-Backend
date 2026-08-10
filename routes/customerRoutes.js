@@ -27,6 +27,125 @@ router.get("/active", (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
+// Get customer stats (Global KPIs)
+router.get("/stats", (req, res) => {
+  try {
+    const data = readDataFile();
+    if (!data) return res.status(500).json({ error: "Failed to read data" });
+
+    const totalCustomers = data.customers.length;
+    let repeatedCustomers = 0;
+    let activeThisMonth = 0;
+    let totalVisits = 0;
+
+    const now = new Date();
+    const currentMonth = now.getMonth();
+    const currentYear = now.getFullYear();
+
+    data.customers.forEach((c) => {
+      const visits = c.history ? c.history.length : 1; // Fallback to 1 if no history array
+      totalVisits += visits;
+      if (visits > 1) {
+        repeatedCustomers++;
+      }
+
+      // Check if visited this month
+      if (c.history && c.history.length > 0) {
+        const hasVisitThisMonth = c.history.some(h => {
+          const d = new Date(h.checkInTime);
+          return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
+        });
+        if (hasVisitThisMonth) activeThisMonth++;
+      } else {
+        // Fallback to checkInTime or createdAt
+        const d = new Date(c.checkInTime || c.createdAt);
+        if (d.getMonth() === currentMonth && d.getFullYear() === currentYear) {
+          activeThisMonth++;
+        }
+      }
+    });
+
+    res.json({
+      totalCustomers,
+      repeatedCustomers,
+      activeThisMonth,
+      totalVisits
+    });
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// Get paginated customers
+router.get("/paginated", (req, res) => {
+  try {
+    const data = readDataFile();
+    if (!data) return res.status(500).json({ error: "Failed to read data" });
+
+    let { page = 1, pageSize = 10, search = "", sortBy = "date", sortDirection = "desc" } = req.query;
+    page = parseInt(page);
+    pageSize = parseInt(pageSize);
+    search = search.toLowerCase();
+
+    let customers = data.customers;
+
+    // Filter
+    if (search) {
+      customers = customers.filter(c => 
+        (c.name && c.name.toLowerCase().includes(search)) || 
+        (c.mobileNumber && c.mobileNumber.includes(search))
+      );
+    }
+
+    const filteredCount = customers.length;
+    const totalCount = data.customers.length;
+
+    // Sort
+    customers.sort((a, b) => {
+      let aVal, bVal;
+      if (sortBy === "name") {
+        aVal = (a.name || "").toLowerCase();
+        bVal = (b.name || "").toLowerCase();
+      } else if (sortBy === "visits") {
+        aVal = a.history ? a.history.length : 1;
+        bVal = b.history ? b.history.length : 1;
+      } else { // default date
+        aVal = new Date(a.createdAt || a.checkInTime).getTime();
+        bVal = new Date(b.createdAt || b.checkInTime).getTime();
+      }
+
+      if (aVal < bVal) return sortDirection === "asc" ? -1 : 1;
+      if (aVal > bVal) return sortDirection === "asc" ? 1 : -1;
+      return 0;
+    });
+
+    // Paginate
+    const start = (page - 1) * pageSize;
+    const paginatedItems = customers.slice(start, start + pageSize);
+
+    // Format items for lightweight transport
+    const items = paginatedItems.map(c => ({
+      id: c.id,
+      name: c.name,
+      mobileNumber: c.mobileNumber,
+      visits: c.history ? c.history.length : 1,
+      lastVisit: c.checkInTime, // The most recent checkInTime
+      dateJoined: c.createdAt || c.checkInTime
+    }));
+
+    res.json({
+      items,
+      filteredCount,
+      totalCount,
+      page,
+      pageSize,
+      totalPages: Math.ceil(filteredCount / pageSize)
+    });
+
+  } catch (err) {
+    res.status(500).json({ error: "Server error" });
+  }
+});
 
 // Customer check-in
 router.post("/", (req, res) => {
