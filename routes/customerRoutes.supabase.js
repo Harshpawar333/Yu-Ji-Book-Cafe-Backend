@@ -308,6 +308,147 @@ router.get("/history", async (req, res) => {
   }
 });
 
+// ──────────────────────────────────────────────────────────────────────────────
+// GET /stats  — global KPI summary for System Data Center (all customers)
+// ──────────────────────────────────────────────────────────────────────────────
+router.get("/stats", async (req, res) => {
+  try {
+    // Total customer count (cheap row estimate)
+    const { count: totalCustomers, error: countErr } = await supabase
+      .from('customers')
+      .select('*', { count: 'exact', head: true });
+    if (countErr) throw countErr;
+
+    // Active this month: customers whose check_in_time is within current calendar month (IST)
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd   = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+
+    const { count: activeThisMonth, error: activeErr } = await supabase
+      .from('customers')
+      .select('*', { count: 'exact', head: true })
+      .gte('check_in_time', monthStart.toISOString())
+      .lte('check_in_time', monthEnd.toISOString());
+    if (activeErr) throw activeErr;
+
+    // Total visits = total rows in customer_history
+    const { count: totalVisits, error: visitsErr } = await supabase
+      .from('customer_history')
+      .select('*', { count: 'exact', head: true });
+    if (visitsErr) throw visitsErr;
+
+    // Repeated customers = customers with more than 1 history row
+    // Use a raw count via RPC or approximate via visits > total customers
+    // Simple approximation: customers who have at least 2 history entries
+    const { data: repeatData, error: repeatErr } = await supabase
+      .rpc('count_repeated_customers');
+
+    let repeatedCustomers = 0;
+    if (repeatErr) {
+      // Fallback: estimate from totalVisits vs totalCustomers
+      repeatedCustomers = Math.max(0, (totalVisits || 0) - (totalCustomers || 0));
+    } else {
+      repeatedCustomers = repeatData || 0;
+    }
+
+    res.json({
+      totalCustomers: totalCustomers || 0,
+      repeatedCustomers,
+      activeThisMonth: activeThisMonth || 0,
+      totalVisits: totalVisits || 0,
+    });
+  } catch (err) {
+    console.error('Error fetching customer stats:', err);
+    res.status(500).json({ error: "Failed to fetch customer stats" });
+  }
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// GET /paginated  — paginated, searchable, sortable customer roster
+// ──────────────────────────────────────────────────────────────────────────────
+router.get("/paginated", async (req, res) => {
+  try {
+    let { page = 1, pageSize = 10, search = "", sortBy = "date", sortDirection = "desc" } = req.query;
+    page     = parseInt(page, 10);
+    pageSize = parseInt(pageSize, 10);
+    const from = (page - 1) * pageSize;
+    const to   = from + pageSize - 1;
+
+    // Total count for the response header (before search filter)
+    const { count: totalCount, error: totalErr } = await supabase
+      .from('customers')
+      .select('*', { count: 'exact', head: true });
+    if (totalErr) throw totalErr;
+
+    // Map frontend sortBy keys → DB columns
+    const sortColumnMap = {
+      name:   'name',
+      date:   'created_at',
+      visits: 'created_at',   // fallback — true visit count requires join
+    };
+    const dbSortColumn = sortColumnMap[sortBy] || 'created_at';
+    const ascending    = sortDirection === 'asc';
+
+    // Build query
+    let query = supabase
+      .from('customers')
+      .select(`
+        id,
+        name,
+        mobile_number,
+        created_at,
+        check_in_time
+      `, { count: 'exact' })
+      .order(dbSortColumn, { ascending })
+      .range(from, to);
+
+    if (search && search.trim() !== '') {
+      const s = search.trim().toLowerCase();
+      // Supabase ilike for partial match on name or mobile_number
+      query = query.or(`name.ilike.%${s}%,mobile_number.ilike.%${s}%`);
+    }
+
+    const { data, count: filteredCount, error } = await query;
+    if (error) throw error;
+
+    // For each customer, get their visit count from customer_history
+    const customerIds = (data || []).map(c => c.id);
+    let visitCounts = {};
+    if (customerIds.length > 0) {
+      const { data: histData, error: histErr } = await supabase
+        .from('customer_history')
+        .select('customer_id')
+        .in('customer_id', customerIds);
+      if (!histErr && histData) {
+        histData.forEach(h => {
+          visitCounts[h.customer_id] = (visitCounts[h.customer_id] || 0) + 1;
+        });
+      }
+    }
+
+    const items = (data || []).map(c => ({
+      id:          c.id,
+      name:        c.name,
+      mobileNumber: c.mobile_number,
+      visits:      visitCounts[c.id] || 1,
+      lastVisit:   c.check_in_time,
+      dateJoined:  c.created_at || c.check_in_time,
+    }));
+
+    res.json({
+      items,
+      filteredCount: filteredCount || 0,
+      totalCount:    totalCount    || 0,
+      page,
+      pageSize,
+      totalPages: Math.ceil((filteredCount || 0) / pageSize),
+    });
+  } catch (err) {
+    console.error('Error fetching paginated customers:', err);
+    res.status(500).json({ error: "Failed to fetch paginated customers" });
+  }
+});
+
 // Get customer by ID with history and orders
 router.get("/:id", async (req, res) => {
   try {
