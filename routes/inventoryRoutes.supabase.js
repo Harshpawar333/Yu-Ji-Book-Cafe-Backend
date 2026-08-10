@@ -129,9 +129,10 @@ router.get("/full-data", async (req, res) => {
         lastUpdated: s.last_updated
       })),
       recipes: (recipesResult.data || []).map(r => {
-        const recipeIngredients = (recipeIngredientsResult.data || [])
+        const recipeIngrs = (recipeIngredientsResult.data || [])
           .filter(ri => ri.recipe_id === r.id)
           .map(ri => ({
+            id: ri.id,
             ingredientId: ri.ingredient_id,
             quantity: ri.quantity,
             unit: ri.unit
@@ -146,9 +147,17 @@ router.get("/full-data", async (req, res) => {
           preparationTime: r.preparation_time,
           totalCost: r.total_cost,
           lastUpdated: r.last_updated,
-          ingredients: recipeIngredients
+          ingredients: recipeIngrs
         };
       }),
+      // Flat list of all recipe_ingredients (with id) for Menu Manager
+      recipeIngredients: (recipeIngredientsResult.data || []).map(ri => ({
+        id: ri.id,
+        recipe_id: ri.recipe_id,
+        ingredient_id: ri.ingredient_id,
+        quantity: ri.quantity,
+        unit: ri.unit
+      })),
       inventoryTransactions: (transactionsResult.data || []).map(t => ({
         id: t.id,
         date: t.date,
@@ -384,6 +393,78 @@ router.delete("/ingredients/:id", async (req, res) => {
     res.json({ success: true });
   } catch (err) {
     console.error("Delete ingredient failed:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ============================================
+// Recipe Ingredients — link/unlink ingredients to recipes
+// Used by the Menu Manager stock linkage panel
+// ============================================
+
+// POST /inventory/recipe-ingredients — add an ingredient to a recipe
+router.post("/recipe-ingredients", async (req, res) => {
+  try {
+    const { recipeId, ingredientId, quantity, unit } = req.body;
+
+    if (!recipeId || !ingredientId || quantity === undefined) {
+      return res.status(400).json({ error: "recipeId, ingredientId, and quantity are required" });
+    }
+
+    // Upsert — if same recipe+ingredient combo exists, update quantity
+    const { data: existing } = await supabase
+      .from("recipe_ingredients")
+      .select("id")
+      .eq("recipe_id", recipeId)
+      .eq("ingredient_id", ingredientId)
+      .maybeSingle();
+
+    let result;
+    if (existing) {
+      const { data, error } = await supabase
+        .from("recipe_ingredients")
+        .update({ quantity: Number(quantity), unit: unit || null })
+        .eq("id", existing.id)
+        .select()
+        .single();
+      if (error) throw error;
+      result = data;
+    } else {
+      const { data, error } = await supabase
+        .from("recipe_ingredients")
+        .insert({
+          recipe_id: recipeId,
+          ingredient_id: ingredientId,
+          quantity: Number(quantity),
+          unit: unit || null,
+        })
+        .select()
+        .single();
+      if (error) throw error;
+      result = data;
+    }
+
+    res.json({ success: true, recipeIngredient: result });
+  } catch (err) {
+    console.error("Add recipe ingredient failed:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /inventory/recipe-ingredients/:id — remove one ingredient link
+router.delete("/recipe-ingredients/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { error } = await supabase
+      .from("recipe_ingredients")
+      .delete()
+      .eq("id", id);
+
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Delete recipe ingredient failed:", err);
     res.status(500).json({ error: err.message });
   }
 });
