@@ -16,12 +16,19 @@ function mapSettings(data) {
 
     // Credit rules for regular customers
     creditRedeemableOn: data.credit_redeemable_on ?? "beverages",
-    // 'beverages' | 'food' | 'both'
     entryFeeRedeemablePercent: data.entry_fee_redeemable_percent ?? 100,
-    // % of entry fee that becomes redeemable credit
 
     // Discounts
     maxDiscountPercent: data.max_discount_percent ?? 15,
+
+    // WiFi Config
+    wifiSsid: data.wifi_ssid ?? null,
+    wifiPassword: data.wifi_password ?? null,
+    wifiSecurity: data.wifi_security ?? 'WPA',
+    wifiHidden: data.wifi_hidden ?? false,
+    wifiDisplayName: data.wifi_display_name ?? null,
+    wifiUpdatedAt: data.wifi_updated_at ?? null,
+    wifiUpdatedBy: data.wifi_updated_by ?? null,
   };
 }
 
@@ -57,6 +64,8 @@ router.put("/", async (req, res) => {
       entryFee1hr, entryFee2hr, timePerEntry,
       creditRedeemableOn, entryFeeRedeemablePercent,
       maxDiscountPercent,
+      // WiFi settings
+      wifiSsid, wifiPassword, wifiSecurity, wifiHidden, wifiDisplayName, wifiUpdatedBy,
     } = req.body;
 
     const updateData = { updated_at: new Date().toISOString() };
@@ -67,6 +76,17 @@ router.put("/", async (req, res) => {
     if (creditRedeemableOn !== undefined)       updateData.credit_redeemable_on = creditRedeemableOn;
     if (entryFeeRedeemablePercent !== undefined) updateData.entry_fee_redeemable_percent = Number(entryFeeRedeemablePercent);
     if (maxDiscountPercent !== undefined)       updateData.max_discount_percent = Number(maxDiscountPercent);
+
+    // WiFi fields
+    if (wifiSsid !== undefined)        updateData.wifi_ssid = wifiSsid;
+    if (wifiPassword !== undefined)    updateData.wifi_password = wifiPassword;
+    if (wifiSecurity !== undefined)    updateData.wifi_security = wifiSecurity;
+    if (wifiHidden !== undefined)      updateData.wifi_hidden = Boolean(wifiHidden);
+    if (wifiDisplayName !== undefined) updateData.wifi_display_name = wifiDisplayName;
+    if (wifiUpdatedBy !== undefined)   updateData.wifi_updated_by = wifiUpdatedBy;
+    if (wifiSsid !== undefined || wifiPassword !== undefined || wifiSecurity !== undefined) {
+      updateData.wifi_updated_at = new Date().toISOString();
+    }
 
     // Keep legacy entry_fee in sync with 2hr fee
     if (entryFee2hr !== undefined) updateData.entry_fee = Number(entryFee2hr);
