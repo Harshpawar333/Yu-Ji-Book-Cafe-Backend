@@ -131,7 +131,7 @@ router.get("/by-date-range", async (req, res) => {
 // Create new external order
 router.post("/", async (req, res) => {
   try {
-    let { source, items, paymentMethod = "online" } = req.body;
+    let { source, items, paymentMethod = "online", discountPercent = 0, discountAmount = 0 } = req.body;
 
     // Validation
     if (!source || typeof source !== "string") {
@@ -172,6 +172,9 @@ router.post("/", async (req, res) => {
       }
       return sum + item.price * item.quantity;
     }, 0);
+    
+    // Calculate payable securely on server
+    const serverPayable = orderTotal - discountAmount;
 
     // Get next token
     const { data: tokenData, error: tokenError } = await supabase
@@ -216,11 +219,13 @@ router.post("/", async (req, res) => {
         source,
         total: orderTotal,
         redeemed: 0,
-        payable: orderTotal,
+        payable: serverPayable,
         payment_method: finalPaymentMethod,
         token_number: tokenNumber,
         timestamp: now.toISOString(),
-        items: orderItems
+        items: orderItems,
+        discount_percent: discountPercent,
+        discount_amount: discountAmount
       });
 
     if (orderError) throw orderError;

@@ -19,6 +19,9 @@ function mapSettings(data) {
     // 'beverages' | 'food' | 'both'
     entryFeeRedeemablePercent: data.entry_fee_redeemable_percent ?? 100,
     // % of entry fee that becomes redeemable credit
+
+    // Discounts
+    maxDiscountPercent: data.max_discount_percent ?? 15,
   };
 }
 
@@ -42,6 +45,7 @@ router.get("/", async (req, res) => {
       timePerEntry: 2,
       creditRedeemableOn: "beverages",
       entryFeeRedeemablePercent: 100,
+      maxDiscountPercent: 15,
     });
   }
 });
@@ -52,6 +56,7 @@ router.put("/", async (req, res) => {
     const {
       entryFee1hr, entryFee2hr, timePerEntry,
       creditRedeemableOn, entryFeeRedeemablePercent,
+      maxDiscountPercent,
     } = req.body;
 
     const updateData = { updated_at: new Date().toISOString() };
@@ -61,6 +66,7 @@ router.put("/", async (req, res) => {
     if (timePerEntry !== undefined)             updateData.time_per_entry = Number(timePerEntry);
     if (creditRedeemableOn !== undefined)       updateData.credit_redeemable_on = creditRedeemableOn;
     if (entryFeeRedeemablePercent !== undefined) updateData.entry_fee_redeemable_percent = Number(entryFeeRedeemablePercent);
+    if (maxDiscountPercent !== undefined)       updateData.max_discount_percent = Number(maxDiscountPercent);
 
     // Keep legacy entry_fee in sync with 2hr fee
     if (entryFee2hr !== undefined) updateData.entry_fee = Number(entryFee2hr);

@@ -635,7 +635,7 @@ router.patch("/:id/checkout", async (req, res) => {
 router.post("/:id/orders", async (req, res) => {
   try {
     const { id } = req.params;
-    const { items, total, redeemed, payable, paymentMethod } = req.body;
+    const { items, total, redeemed, paymentMethod, discountPercent = 0, discountAmount = 0 } = req.body;
 
     // Get customer
     const { data: customer, error: fetchError } = await supabase
@@ -655,6 +655,9 @@ router.post("/:id/orders", async (req, res) => {
     const orderId = uuidv4();
     const timestamp = new Date().toISOString();
 
+    // Calculate payable securely on server
+    const serverPayable = total - actualRedeemed - discountAmount;
+
     // Create order
     const { error: orderError } = await supabase
       .from('orders')
@@ -663,10 +666,12 @@ router.post("/:id/orders", async (req, res) => {
         customer_id: id,
         total,
         redeemed: actualRedeemed,
-        payable: total - actualRedeemed,
+        payable: serverPayable,
         payment_method: paymentMethod,
         token_number: customer.token_number,
-        timestamp
+        timestamp,
+        discount_percent: discountPercent,
+        discount_amount: discountAmount
       });
 
     if (orderError) throw orderError;
@@ -689,9 +694,14 @@ router.post("/:id/orders", async (req, res) => {
 
     // Update customer credit - ensure it never goes negative
     const newCredit = Math.max(0, customer.redeemable_credit - actualRedeemed);
+    const newTotalDiscount = (Number(customer.total_discount_given) || 0) + Number(discountAmount);
+    
     const { data: updatedCustomer, error: updateError } = await supabase
       .from('customers')
-      .update({ redeemable_credit: newCredit })
+      .update({ 
+        redeemable_credit: newCredit,
+        total_discount_given: newTotalDiscount
+      })
       .eq('id', id)
       .select(`
         *,
