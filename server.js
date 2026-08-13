@@ -41,7 +41,8 @@ const corsOptions = {
   origin: [
     "http://localhost:5173", 
     "http://localhost:5174",
-    "https://pos-cafe.emacrontechnologies.com"
+    "https://pos-cafe.emacrontechnologies.com",
+    "https://cafe.theyuji.com"
   ],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
