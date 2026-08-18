@@ -469,6 +469,112 @@ router.delete("/recipe-ingredients/:id", async (req, res) => {
   }
 });
 
+
+// ============================================
+// CRUD endpoints for suppliers
+// ============================================
+
+// POST /suppliers - Add new supplier
+router.post("/suppliers", async (req, res) => {
+  try {
+    const s = req.body;
+    if (!s.name?.trim())          return res.status(400).json({ error: "Supplier name is required" });
+    if (!s.contactPerson?.trim()) return res.status(400).json({ error: "Contact person is required" });
+    if (!s.phone?.trim())         return res.status(400).json({ error: "Phone number is required" });
+
+    const { data, error } = await supabase
+      .from("suppliers")
+      .insert({
+        name:           s.name.trim(),
+        contact_person: s.contactPerson?.trim() || null,
+        phone:          s.phone?.trim()         || null,
+        email:          s.email?.trim()         || null,
+        address:        s.address?.trim()       || null,
+        payment_terms:  s.paymentTerms          || "Net 30",
+        notes:          s.notes?.trim()         || null,
+        is_active:      s.isActive !== false,
+        last_updated:   new Date().toISOString(),
+      })
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    // Return in camelCase to match frontend expectations
+    res.status(201).json({
+      id:            data.id,
+      name:          data.name,
+      contactPerson: data.contact_person,
+      phone:         data.phone,
+      email:         data.email,
+      address:       data.address,
+      paymentTerms:  data.payment_terms,
+      notes:         data.notes,
+      isActive:      data.is_active,
+      lastUpdated:   data.last_updated,
+    });
+  } catch (err) {
+    console.error("Create supplier failed:", err);
+    res.status(500).json({ error: err.message || "Failed to create supplier" });
+  }
+});
+
+// PUT /suppliers/:id - Update supplier
+router.put("/suppliers/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const s = req.body;
+
+    const { data, error } = await supabase
+      .from("suppliers")
+      .update({
+        name:           s.name?.trim(),
+        contact_person: s.contactPerson?.trim(),
+        phone:          s.phone?.trim(),
+        email:          s.email?.trim()   || null,
+        address:        s.address?.trim() || null,
+        payment_terms:  s.paymentTerms    || "Net 30",
+        notes:          s.notes?.trim()   || null,
+        is_active:      s.isActive !== false,
+        last_updated:   new Date().toISOString(),
+      })
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    res.json({
+      id:            data.id,
+      name:          data.name,
+      contactPerson: data.contact_person,
+      phone:         data.phone,
+      email:         data.email,
+      address:       data.address,
+      paymentTerms:  data.payment_terms,
+      notes:         data.notes,
+      isActive:      data.is_active,
+      lastUpdated:   data.last_updated,
+    });
+  } catch (err) {
+    console.error("Update supplier failed:", err);
+    res.status(500).json({ error: err.message || "Failed to update supplier" });
+  }
+});
+
+// DELETE /suppliers/:id - Delete supplier
+router.delete("/suppliers/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { error } = await supabase.from("suppliers").delete().eq("id", id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Delete supplier failed:", err);
+    res.status(500).json({ error: err.message || "Failed to delete supplier" });
+  }
+});
+
 // ============================================
 // Export router
 // ============================================

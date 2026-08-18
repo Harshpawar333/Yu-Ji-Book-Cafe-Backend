@@ -298,4 +298,49 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
+// PATCH external order (superadmin edit)
+router.patch("/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { source, paymentMethod, discountPercent, discountAmount, payable, total } = req.body;
+
+    const updates = {};
+    if (source       !== undefined) updates.source          = source;
+    if (paymentMethod !== undefined) updates.payment_method  = paymentMethod;
+    if (discountPercent !== undefined) updates.discount_percent = discountPercent;
+    if (discountAmount  !== undefined) updates.discount_amount  = discountAmount;
+    if (payable      !== undefined) updates.payable          = payable;
+    if (total        !== undefined) updates.total            = total;
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: "No fields to update" });
+    }
+
+    const { data, error } = await supabase
+      .from("external_orders")
+      .update(updates)
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (error) throw error;
+
+    res.json({
+      id: data.id,
+      source: data.source,
+      total: data.total,
+      payable: data.payable,
+      discountPercent: data.discount_percent,
+      discountAmount:  data.discount_amount,
+      discount_percent: data.discount_percent,
+      discount_amount:  data.discount_amount,
+      paymentMethod: data.payment_method,
+      timestamp: data.timestamp,
+    });
+  } catch (err) {
+    console.error("Patch external order failed:", err);
+    res.status(500).json({ error: err.message || "Failed to update order" });
+  }
+});
+
 module.exports = router;

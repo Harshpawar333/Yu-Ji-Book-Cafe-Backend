@@ -1000,4 +1000,60 @@ router.get("/orders/by-date", async (req, res) => {
   }
 });
 
+// ─── SUPERADMIN: Edit a specific dine-in order ──────────────────────────────
+// PATCH /customers/:customerId/orders/:orderId
+router.patch("/:customerId/orders/:orderId", async (req, res) => {
+  try {
+    const { customerId, orderId } = req.params;
+    const { paymentMethod, discountPercent, discountAmount, payable, total } = req.body;
+
+    // Fetch existing orders JSONB
+    const { data: customer, error: fetchErr } = await supabase
+      .from("customers")
+      .select("orders")
+      .eq("id", customerId)
+      .single();
+
+    if (fetchErr) throw fetchErr;
+
+    const orders = (customer.orders || []).map(o => {
+      if (o.id !== orderId) return o;
+      return {
+        ...o,
+        ...(paymentMethod  !== undefined && { paymentMethod }),
+        ...(discountPercent !== undefined && { discount_percent: discountPercent, discountPercent }),
+        ...(discountAmount  !== undefined && { discount_amount:  discountAmount,  discountAmount  }),
+        ...(payable        !== undefined && { payable }),
+        ...(total          !== undefined && { total }),
+      };
+    });
+
+    const { error: updateErr } = await supabase
+      .from("customers")
+      .update({ orders })
+      .eq("id", customerId);
+
+    if (updateErr) throw updateErr;
+
+    res.json({ success: true, orderId });
+  } catch (err) {
+    console.error("Patch customer order failed:", err);
+    res.status(500).json({ error: err.message || "Failed to update order" });
+  }
+});
+
+// ─── SUPERADMIN: Delete a customer entry (full session) ──────────────────────
+// DELETE /customers/:id
+router.delete("/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { error } = await supabase.from("customers").delete().eq("id", id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err) {
+    console.error("Delete customer entry failed:", err);
+    res.status(500).json({ error: err.message || "Failed to delete entry" });
+  }
+});
+
 module.exports = router;
