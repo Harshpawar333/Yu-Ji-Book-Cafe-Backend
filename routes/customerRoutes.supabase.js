@@ -9,41 +9,56 @@ const { supabase } = require("../config/supabase");
 const { transformToCamelCase, transformToSnakeCase } = require("../utils/dbTransform");
 
 // Get all customers
+// When ?date= is provided, uses customer_history as the immutable source of truth.
+// This prevents past-date sales totals from changing when a repeat customer
+// visits again on a later date (which would overwrite customers.check_in_time).
 router.get("/", async (req, res) => {
   try {
     const { date } = req.query;
     
-    // If date is provided, fetch customers and filter their orders by date
+    // If date is provided, fetch via customer_history (immutable per-visit records)
     if (date) {
       // Convert IST date to UTC range
       const startOfDay = new Date(date + 'T00:00:00.000+05:30');
       const endOfDay = new Date(date + 'T23:59:59.999+05:30');
-      
-      // Fetch customers who checked in on this date
-      const { data: customers, error: customersError } = await supabase
-        .from('customers')
+
+      // ─── SOURCE OF TRUTH: customer_history ───────────────────────────────
+      // customer_history rows are append-only. Each visit creates a permanent
+      // record whose check_in_time never changes — even when the same customer
+      // returns next week and their customers.check_in_time gets overwritten.
+      const { data: historyRows, error: historyError } = await supabase
+        .from('customer_history')
         .select('*')
         .gte('check_in_time', startOfDay.toISOString())
         .lte('check_in_time', endOfDay.toISOString())
         .order('check_in_time', { ascending: false })
-        .limit(100);
+        .limit(200);
 
-      if (customersError) throw customersError;
+      if (historyError) throw historyError;
 
-      if (!customers || customers.length === 0) {
+      if (!historyRows || historyRows.length === 0) {
         return res.json([]);
       }
 
-      // Get customer IDs
-      const customerIds = customers.map(c => c.id);
+      // Collect the unique customer IDs from these history rows
+      const customerIds = [...new Set(historyRows.map(h => h.customer_id))];
 
-      // Fetch ONLY orders placed on this date for these customers
+      // Fetch static profile data from customers table (name, mobile, membership, etc.)
+      const { data: profiles, error: profilesError } = await supabase
+        .from('customers')
+        .select('id, name, mobile_number, is_member, total_discount_given, entry_fee_per_person, entry_duration')
+        .in('id', customerIds);
+
+      if (profilesError) throw profilesError;
+
+      const profileMap = {};
+      (profiles || []).forEach(p => { profileMap[p.id] = p; });
+
+      // Fetch ONLY orders placed on this specific date — keyed by customer_id.
+      // orders.timestamp is immutable; it is never updated after creation.
       const { data: orders, error: ordersError } = await supabase
         .from('orders')
-        .select(`
-          *,
-          order_items (*)
-        `)
+        .select('*, order_items (*)')
         .in('customer_id', customerIds)
         .gte('timestamp', startOfDay.toISOString())
         .lte('timestamp', endOfDay.toISOString())
@@ -51,7 +66,7 @@ router.get("/", async (req, res) => {
 
       if (ordersError) throw ordersError;
 
-      // Group orders by customer
+      // Group orders by customer_id
       const ordersByCustomer = {};
       (orders || []).forEach(order => {
         if (!ordersByCustomer[order.customer_id]) {
@@ -60,16 +75,42 @@ router.get("/", async (req, res) => {
         ordersByCustomer[order.customer_id].push(order);
       });
 
-      // Attach orders to customers
-      const customersWithOrders = customers.map(customer => ({
-        ...customer,
-        orders: ordersByCustomer[customer.id] || []
-      }));
+      // Build the response: merge history row data + profile + orders.
+      // Use history row fields (people, payment_method, redeemable_credit,
+      // renewal_number, token_number, entry_fee_per_person, entry_duration)
+      // because they were captured AT visit time and are permanently accurate.
+      const customersWithOrders = historyRows.map(h => {
+        const profile = profileMap[h.customer_id] || {};
+        return {
+          // Static profile (never changes)
+          id: h.customer_id,
+          name: profile.name,
+          mobile_number: profile.mobile_number,
+          is_member: profile.is_member || false,
+          total_discount_given: profile.total_discount_given || 0,
+          // Per-visit state — taken from history row, NOT from customers table
+          check_in_time: h.check_in_time,
+          check_out_time: h.check_out_time,
+          people: h.people,
+          payment_method: h.payment_method,
+          redeemable_credit: h.redeemable_credit,
+          token_number: h.token_number,
+          is_renewal: h.is_renewal || false,
+          renewal_count: h.renewal_number || 0,
+          // Use fee stored in history row; fall back to current customer profile value
+          entry_fee_per_person: h.entry_fee_per_person || profile.entry_fee_per_person,
+          entry_duration: h.entry_duration || profile.entry_duration || '2hr',
+          // isActive: customer is still active if they haven't checked out yet
+          is_active: !h.check_out_time,
+          // Orders that occurred on this specific date
+          orders: ordersByCustomer[h.customer_id] || []
+        };
+      });
 
       return res.json(transformToCamelCase(customersWithOrders));
     }
 
-    // If no date filter, fetch all customers with all orders (original behavior)
+    // If no date filter, fetch all customers with all orders (original live-view behavior)
     const { data, error } = await supabase
       .from('customers')
       .select(`
@@ -89,6 +130,9 @@ router.get("/", async (req, res) => {
     res.status(500).json({ error: "Failed to fetch customers" });
   }
 });
+// GET /by-date-range — used by BillingPage for multi-day reporting.
+// Same fix: uses customer_history as the immutable source of truth so that
+// repeat customer visits on later dates do not alter historical totals.
 router.get("/by-date-range", async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
@@ -107,32 +151,43 @@ router.get("/by-date-range", async (req, res) => {
       startDate, 'to', endDate,
       'UTC range:', start.toISOString(), 'to', end.toISOString()
     );
-    
-    // Fetch customers who checked in within this date range
-    const { data: customers, error: customersError } = await supabase
-      .from('customers')
+
+    // ─── SOURCE OF TRUTH: customer_history ───────────────────────────────
+    // Query history rows whose check_in_time falls within the requested range.
+    // These rows are append-only and are NEVER updated, so past-date totals
+    // remain accurate regardless of future repeat visits.
+    const { data: historyRows, error: historyError } = await supabase
+      .from('customer_history')
       .select('*')
       .gte('check_in_time', start.toISOString())
       .lte('check_in_time', end.toISOString())
       .order('check_in_time', { ascending: false })
-      .limit(100);
+      .limit(500);
 
-    if (customersError) throw customersError;
+    if (historyError) throw historyError;
 
-    if (!customers || customers.length === 0) {
+    if (!historyRows || historyRows.length === 0) {
       return res.json([]);
     }
 
-    // Get customer IDs
-    const customerIds = customers.map(c => c.id);
+    // Collect unique customer IDs
+    const customerIds = [...new Set(historyRows.map(h => h.customer_id))];
 
-    // Fetch orders placed within this date range for these customers
+    // Fetch static profile data (name, mobile, membership flags)
+    const { data: profiles, error: profilesError } = await supabase
+      .from('customers')
+      .select('id, name, mobile_number, is_member, total_discount_given, entry_fee_per_person, entry_duration')
+      .in('id', customerIds);
+
+    if (profilesError) throw profilesError;
+
+    const profileMap = {};
+    (profiles || []).forEach(p => { profileMap[p.id] = p; });
+
+    // Fetch orders within this date range by their immutable timestamp
     const { data: orders, error: ordersError } = await supabase
       .from('orders')
-      .select(`
-        *,
-        order_items (*)
-      `)
+      .select('*, order_items (*)')
       .in('customer_id', customerIds)
       .gte('timestamp', start.toISOString())
       .lte('timestamp', end.toISOString())
@@ -140,7 +195,7 @@ router.get("/by-date-range", async (req, res) => {
 
     if (ordersError) throw ordersError;
 
-    // Group orders by customer
+    // Group orders by customer_id
     const ordersByCustomer = {};
     (orders || []).forEach(order => {
       if (!ordersByCustomer[order.customer_id]) {
@@ -149,13 +204,31 @@ router.get("/by-date-range", async (req, res) => {
       ordersByCustomer[order.customer_id].push(order);
     });
 
-    // Attach orders to customers
-    const customersWithOrders = customers.map(customer => ({
-      ...customer,
-      orders: ordersByCustomer[customer.id] || []
-    }));
+    // Build response from history rows (immutable per-visit state) + profile + orders
+    const customersWithOrders = historyRows.map(h => {
+      const profile = profileMap[h.customer_id] || {};
+      return {
+        id: h.customer_id,
+        name: profile.name,
+        mobile_number: profile.mobile_number,
+        is_member: profile.is_member || false,
+        total_discount_given: profile.total_discount_given || 0,
+        check_in_time: h.check_in_time,
+        check_out_time: h.check_out_time,
+        people: h.people,
+        payment_method: h.payment_method,
+        redeemable_credit: h.redeemable_credit,
+        token_number: h.token_number,
+        is_renewal: h.is_renewal || false,
+        renewal_count: h.renewal_number || 0,
+        entry_fee_per_person: h.entry_fee_per_person || profile.entry_fee_per_person,
+        entry_duration: h.entry_duration || profile.entry_duration || '2hr',
+        is_active: !h.check_out_time,
+        orders: ordersByCustomer[h.customer_id] || []
+      };
+    });
 
-    console.log(`Returning ${customersWithOrders.length} customers with orders`);
+    console.log(`Returning ${customersWithOrders.length} visit records with orders`);
     return res.json(transformToCamelCase(customersWithOrders));
   } catch (err) {
     console.error('Error fetching customers by date range:', err);
@@ -588,7 +661,8 @@ router.post("/", async (req, res) => {
 
       if (updateError) throw updateError;
 
-      // Add fresh visit to history
+      // Add fresh visit to history — store fee and duration so past-date
+      // billing remains accurate even if the fee changes in the future.
       await supabase
         .from('customer_history')
         .insert({
@@ -597,7 +671,9 @@ router.post("/", async (req, res) => {
           people,
           payment_method: paymentMethod,
           redeemable_credit: redeemableCredit,
-          token_number: tokenNumber
+          token_number: tokenNumber,
+          entry_fee_per_person: entryFeePerPerson,
+          entry_duration: entryDuration
         });
 
       return res.json(transformToCamelCase(updatedCustomer));
@@ -629,7 +705,8 @@ router.post("/", async (req, res) => {
 
     if (createError) throw createError;
 
-    // Add to history
+    // Add to history — store fee and duration so past-date billing remains
+    // accurate even if the entry fee is changed in system settings later.
     await supabase
       .from('customer_history')
       .insert({
@@ -638,7 +715,9 @@ router.post("/", async (req, res) => {
         people,
         payment_method: paymentMethod,
         redeemable_credit: redeemableCredit,
-        token_number: tokenNumber
+        token_number: tokenNumber,
+        entry_fee_per_person: entryFeePerPerson,
+        entry_duration: entryDuration
       });
 
     res.json(transformToCamelCase(newCustomer));
@@ -690,7 +769,7 @@ router.patch("/:id/renewal", async (req, res) => {
     const checkInTime = new Date(customer.check_in_time);
     const newExpiry = new Date(checkInTime.getTime() + newRedeemableCredit * 60 * 1000);
 
-    // Update customer
+    // Update customer live state
     const { data: updatedCustomer, error: updateError } = await supabase
       .from('customers')
       .update({
@@ -703,6 +782,21 @@ router.patch("/:id/renewal", async (req, res) => {
       .single();
 
     if (updateError) throw updateError;
+
+    // Also update the current open history row so that historical billing reads
+    // the correct accumulated renewal_number and redeemable_credit for this visit.
+    // We update the most-recent history row that has no checkout time.
+    await supabase
+      .from('customer_history')
+      .update({
+        renewal_number: newRenewalCount,
+        is_renewal: true,
+        redeemable_credit: newRedeemableCredit
+      })
+      .eq('customer_id', id)
+      .is('check_out_time', null)
+      .order('check_in_time', { ascending: false })
+      .limit(1);
 
     res.json({
       customer: transformToCamelCase(updatedCustomer),
@@ -718,6 +812,7 @@ router.patch("/:id/renewal", async (req, res) => {
     res.status(500).json({ error: "Failed to renew customer" });
   }
 });
+
 
 // Customer checkout
 router.patch("/:id/checkout", async (req, res) => {
