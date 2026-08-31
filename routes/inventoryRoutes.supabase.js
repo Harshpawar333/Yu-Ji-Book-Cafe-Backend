@@ -576,6 +576,209 @@ router.delete("/suppliers/:id", async (req, res) => {
 });
 
 // ============================================
+// POST /purchaseOrder — Create a new purchase order
+// Creates the PO header + all line items in Supabase.
+// Stock is NOT added yet — it is added when the PO is received.
+// ============================================
+router.post("/purchaseOrder", async (req, res) => {
+  try {
+    const { supplierId, date, expectedDelivery, notes, status = "pending", items = [] } = req.body;
+
+    if (!items || items.length === 0) {
+      return res.status(400).json({ error: "At least one item is required" });
+    }
+
+    // Calculate total amount
+    const totalAmount = items.reduce((sum, item) =>
+      sum + (Number(item.quantity) || 0) * (Number(item.unitCost) || 0), 0);
+
+    // Insert PO header
+    const { data: po, error: poError } = await supabase
+      .from("purchase_orders")
+      .insert({
+        supplier_id: supplierId || null,
+        date: date || new Date().toISOString(),
+        expected_delivery: expectedDelivery || null,
+        notes: notes || null,
+        status,
+        total_amount: totalAmount,
+      })
+      .select()
+      .single();
+
+    if (poError) throw poError;
+
+    // Insert line items
+    if (items.length > 0) {
+      const lineItems = items.map(item => ({
+        purchase_order_id: po.id,
+        ingredient_id: item.itemId || item.ingredientId || null,
+        quantity: Number(item.quantity) || 0,
+        unit_cost: Number(item.unitCost) || 0,
+        total_cost: (Number(item.quantity) || 0) * (Number(item.unitCost) || 0),
+      }));
+
+      const { error: itemsError } = await supabase
+        .from("purchase_order_items")
+        .insert(lineItems);
+
+      if (itemsError) throw itemsError;
+    }
+
+    // Fetch items back for response
+    const { data: poItems } = await supabase
+      .from("purchase_order_items")
+      .select("*")
+      .eq("purchase_order_id", po.id);
+
+    res.status(201).json({
+      id: po.id,
+      supplierId: po.supplier_id,
+      date: po.date,
+      expectedDelivery: po.expected_delivery,
+      notes: po.notes,
+      status: po.status,
+      totalAmount: po.total_amount,
+      items: (poItems || []).map(i => ({
+        ingredientId: i.ingredient_id,
+        quantity: i.quantity,
+        unitCost: i.unit_cost,
+        totalCost: i.total_cost,
+      })),
+    });
+  } catch (err) {
+    console.error("PO creation failed:", err);
+    res.status(500).json({ error: err.message || "Failed to create purchase order" });
+  }
+});
+
+// ============================================
+// PUT /purchaseOrder/:id — Update a purchase order
+// ============================================
+router.put("/purchaseOrder/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { supplierId, date, expectedDelivery, notes, status, items = [] } = req.body;
+
+    const totalAmount = items.reduce((sum, item) =>
+      sum + (Number(item.quantity) || 0) * (Number(item.unitCost) || 0), 0);
+
+    const { data: po, error: poError } = await supabase
+      .from("purchase_orders")
+      .update({
+        supplier_id: supplierId || null,
+        date: date || new Date().toISOString(),
+        expected_delivery: expectedDelivery || null,
+        notes: notes || null,
+        status: status || "pending",
+        total_amount: totalAmount,
+      })
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (poError) throw poError;
+
+    res.json({
+      id: po.id,
+      supplierId: po.supplier_id,
+      date: po.date,
+      expectedDelivery: po.expected_delivery,
+      notes: po.notes,
+      status: po.status,
+      totalAmount: po.total_amount,
+    });
+  } catch (err) {
+    console.error("PO update failed:", err);
+    res.status(500).json({ error: err.message || "Failed to update purchase order" });
+  }
+});
+
+// ============================================
+// PUT /purchase-orders/:id/receive
+// THE CRITICAL ROUTE — marks the PO as received and
+// automatically adds the ordered quantity to each ingredient's stock.
+// This is what makes "create PO → receive PO" actually update stock.
+// ============================================
+router.put("/purchase-orders/:id/receive", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Fetch the PO and its items
+    const { data: po, error: poError } = await supabase
+      .from("purchase_orders")
+      .select("*")
+      .eq("id", id)
+      .single();
+
+    if (poError || !po) return res.status(404).json({ error: "Purchase order not found" });
+
+    const { data: poItems, error: itemsError } = await supabase
+      .from("purchase_order_items")
+      .select("*")
+      .eq("purchase_order_id", id);
+
+    if (itemsError) throw itemsError;
+
+    const itemsToProcess = poItems || [];
+
+    // For each line item: add quantity to ingredient stock + record transaction
+    for (const item of itemsToProcess) {
+      if (!item.ingredient_id || !item.quantity) continue;
+
+      // Get current stock
+      const { data: ingredient, error: ingError } = await supabase
+        .from("ingredients")
+        .select("current_stock, name")
+        .eq("id", item.ingredient_id)
+        .single();
+
+      if (ingError || !ingredient) {
+        console.warn(`Ingredient ${item.ingredient_id} not found, skipping`);
+        continue;
+      }
+
+      const newStock = parseFloat(ingredient.current_stock || 0) + parseFloat(item.quantity);
+
+      // Update stock
+      await supabase
+        .from("ingredients")
+        .update({ current_stock: newStock, last_updated: new Date().toISOString() })
+        .eq("id", item.ingredient_id);
+
+      // Record transaction
+      await supabase
+        .from("inventory_transactions")
+        .insert({
+          type: "stock-in",
+          item_type: "ingredient",
+          item_id: item.ingredient_id,
+          quantity: parseFloat(item.quantity),
+          reason: `Purchase Order received (PO #${id.slice(-6).toUpperCase()})`,
+          recorded_by: "system",
+          remaining_stock: newStock,
+        });
+    }
+
+    // Mark PO as received
+    const { data: updatedPo, error: updateError } = await supabase
+      .from("purchase_orders")
+      .update({ status: "received" })
+      .eq("id", id)
+      .select()
+      .single();
+
+    if (updateError) throw updateError;
+
+    console.log(`✅ PO ${id} received — stock updated for ${itemsToProcess.length} ingredients`);
+    res.json({ success: true, purchaseOrder: updatedPo });
+  } catch (err) {
+    console.error("PO receive failed:", err);
+    res.status(500).json({ error: err.message || "Failed to receive purchase order" });
+  }
+});
+
+// ============================================
 // Export router
 // ============================================
 module.exports = router;
