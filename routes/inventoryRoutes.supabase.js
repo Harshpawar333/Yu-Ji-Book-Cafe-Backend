@@ -181,10 +181,13 @@ router.get("/full-data", async (req, res) => {
         items: (purchaseOrderItemsResult?.data || [])
           .filter(poi => poi.purchase_order_id === po.id)
           .map(poi => ({
-            ingredientId: poi.ingredient_id,
+            id: poi.id,
+            itemId: poi.item_id,
+            itemType: poi.item_type,
+            ingredientId: poi.item_id,   // alias for backwards compat
             quantity: poi.quantity,
             unitCost: poi.unit_cost,
-            totalCost: poi.total_cost
+            receivedQuantity: poi.received_quantity,
           }))
       })),
       wasteRecords: (wasteRecordsResult.data || []).map(w => ({
@@ -597,8 +600,8 @@ router.post("/purchaseOrder", async (req, res) => {
       .from("purchase_orders")
       .insert({
         supplier_id: supplierId || null,
-        date: date || new Date().toISOString(),
-        expected_delivery: expectedDelivery || null,
+        date: (date || new Date().toISOString()).split("T")[0],
+        expected_delivery: expectedDelivery ? expectedDelivery.split("T")[0] : null,
         notes: notes || null,
         status,
         total_amount: totalAmount,
@@ -608,22 +611,21 @@ router.post("/purchaseOrder", async (req, res) => {
 
     if (poError) throw poError;
 
-    // Insert line items
-    if (items.length > 0) {
-      const lineItems = items.map(item => ({
-        purchase_order_id: po.id,
-        ingredient_id: item.itemId || item.ingredientId || null,
-        quantity: Number(item.quantity) || 0,
-        unit_cost: Number(item.unitCost) || 0,
-        total_cost: (Number(item.quantity) || 0) * (Number(item.unitCost) || 0),
-      }));
+    // Insert line items — real columns: item_id, item_type, quantity, unit_cost, received_quantity
+    const lineItems = items.map(item => ({
+      purchase_order_id: po.id,
+      item_id: item.itemId || item.ingredientId || null,
+      item_type: item.itemType || "ingredient",
+      quantity: Number(item.quantity) || 0,
+      unit_cost: Number(item.unitCost) || 0,
+      received_quantity: 0,
+    }));
 
-      const { error: itemsError } = await supabase
-        .from("purchase_order_items")
-        .insert(lineItems);
+    const { error: itemsError } = await supabase
+      .from("purchase_order_items")
+      .insert(lineItems);
 
-      if (itemsError) throw itemsError;
-    }
+    if (itemsError) throw itemsError;
 
     // Fetch items back for response
     const { data: poItems } = await supabase
@@ -640,10 +642,13 @@ router.post("/purchaseOrder", async (req, res) => {
       status: po.status,
       totalAmount: po.total_amount,
       items: (poItems || []).map(i => ({
-        ingredientId: i.ingredient_id,
+        id: i.id,
+        itemId: i.item_id,
+        ingredientId: i.item_id,  // alias for frontend compat
+        itemType: i.item_type,
         quantity: i.quantity,
         unitCost: i.unit_cost,
-        totalCost: i.total_cost,
+        receivedQuantity: i.received_quantity,
       })),
     });
   } catch (err) {
@@ -694,17 +699,15 @@ router.put("/purchaseOrder/:id", async (req, res) => {
   }
 });
 
-// ============================================
 // PUT /purchase-orders/:id/receive
 // THE CRITICAL ROUTE — marks the PO as received and
 // automatically adds the ordered quantity to each ingredient's stock.
-// This is what makes "create PO → receive PO" actually update stock.
 // ============================================
 router.put("/purchase-orders/:id/receive", async (req, res) => {
   try {
     const { id } = req.params;
 
-    // Fetch the PO and its items
+    // Fetch the PO
     const { data: po, error: poError } = await supabase
       .from("purchase_orders")
       .select("*")
@@ -713,6 +716,7 @@ router.put("/purchase-orders/:id/receive", async (req, res) => {
 
     if (poError || !po) return res.status(404).json({ error: "Purchase order not found" });
 
+    // Fetch its line items — real column is item_id not ingredient_id
     const { data: poItems, error: itemsError } = await supabase
       .from("purchase_order_items")
       .select("*")
@@ -724,17 +728,18 @@ router.put("/purchase-orders/:id/receive", async (req, res) => {
 
     // For each line item: add quantity to ingredient stock + record transaction
     for (const item of itemsToProcess) {
-      if (!item.ingredient_id || !item.quantity) continue;
+      const ingredientId = item.item_id;  // ← correct column name
+      if (!ingredientId || !item.quantity) continue;
 
       // Get current stock
       const { data: ingredient, error: ingError } = await supabase
         .from("ingredients")
         .select("current_stock, name")
-        .eq("id", item.ingredient_id)
+        .eq("id", ingredientId)
         .single();
 
       if (ingError || !ingredient) {
-        console.warn(`Ingredient ${item.ingredient_id} not found, skipping`);
+        console.warn(`Ingredient ${ingredientId} not found, skipping`);
         continue;
       }
 
@@ -744,7 +749,13 @@ router.put("/purchase-orders/:id/receive", async (req, res) => {
       await supabase
         .from("ingredients")
         .update({ current_stock: newStock, last_updated: new Date().toISOString() })
-        .eq("id", item.ingredient_id);
+        .eq("id", ingredientId);
+
+      // Mark item as received
+      await supabase
+        .from("purchase_order_items")
+        .update({ received_quantity: parseFloat(item.quantity) })
+        .eq("id", item.id);
 
       // Record transaction
       await supabase
@@ -752,7 +763,7 @@ router.put("/purchase-orders/:id/receive", async (req, res) => {
         .insert({
           type: "stock-in",
           item_type: "ingredient",
-          item_id: item.ingredient_id,
+          item_id: ingredientId,
           quantity: parseFloat(item.quantity),
           reason: `Purchase Order received (PO #${id.slice(-6).toUpperCase()})`,
           recorded_by: "system",
@@ -770,7 +781,7 @@ router.put("/purchase-orders/:id/receive", async (req, res) => {
 
     if (updateError) throw updateError;
 
-    console.log(`✅ PO ${id} received — stock updated for ${itemsToProcess.length} ingredients`);
+    console.log(`✅ PO ${id} received — stock updated for ${itemsToProcess.length} items`);
     res.json({ success: true, purchaseOrder: updatedPo });
   } catch (err) {
     console.error("PO receive failed:", err);
