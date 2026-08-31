@@ -66,7 +66,7 @@ router.get("/", async (req, res) => {
 
       if (ordersError) throw ordersError;
 
-      // Group orders by customer_id
+      // Group orders by customer_id for quick lookup
       const ordersByCustomer = {};
       (orders || []).forEach(order => {
         if (!ordersByCustomer[order.customer_id]) {
@@ -81,6 +81,23 @@ router.get("/", async (req, res) => {
       // because they were captured AT visit time and are permanently accurate.
       const customersWithOrders = historyRows.map(h => {
         const profile = profileMap[h.customer_id] || {};
+
+        // ── CRITICAL: scope orders to THIS visit's time window ────────────
+        // A customer can visit multiple times in the same day.
+        // Without this filter, ALL of today's orders for that customer would
+        // appear on EVERY visit row — doubling/tripling order totals.
+        // We include an order if its timestamp falls between this visit's
+        // check_in_time and (check_out_time OR now for active sessions).
+        const visitStart = new Date(h.check_in_time).getTime();
+        const visitEnd   = h.check_out_time
+          ? new Date(h.check_out_time).getTime()
+          : Date.now(); // still active — include orders up to now
+
+        const visitOrders = (ordersByCustomer[h.customer_id] || []).filter(o => {
+          const t = new Date(o.timestamp).getTime();
+          return t >= visitStart && t <= visitEnd;
+        });
+
         return {
           // Static profile (never changes)
           id: h.customer_id,
@@ -102,8 +119,8 @@ router.get("/", async (req, res) => {
           entry_duration: h.entry_duration || profile.entry_duration || '2hr',
           // isActive: customer is still active if they haven't checked out yet
           is_active: !h.check_out_time,
-          // Orders that occurred on this specific date
-          orders: ordersByCustomer[h.customer_id] || []
+          // Only orders placed during this specific visit
+          orders: visitOrders
         };
       });
 
@@ -195,7 +212,7 @@ router.get("/by-date-range", async (req, res) => {
 
     if (ordersError) throw ordersError;
 
-    // Group orders by customer_id
+    // Group orders by customer_id for quick lookup
     const ordersByCustomer = {};
     (orders || []).forEach(order => {
       if (!ordersByCustomer[order.customer_id]) {
@@ -207,6 +224,21 @@ router.get("/by-date-range", async (req, res) => {
     // Build response from history rows (immutable per-visit state) + profile + orders
     const customersWithOrders = historyRows.map(h => {
       const profile = profileMap[h.customer_id] || {};
+
+      // ── CRITICAL: scope orders to THIS visit's time window ────────────
+      // A customer can visit multiple times on the same day (or across the date
+      // range). Without this filter, ALL orders for that customer_id in the
+      // date range would appear on every visit row — doubling/tripling totals.
+      const visitStart = new Date(h.check_in_time).getTime();
+      const visitEnd   = h.check_out_time
+        ? new Date(h.check_out_time).getTime()
+        : Date.now();
+
+      const visitOrders = (ordersByCustomer[h.customer_id] || []).filter(o => {
+        const t = new Date(o.timestamp).getTime();
+        return t >= visitStart && t <= visitEnd;
+      });
+
       return {
         id: h.customer_id,
         name: profile.name,
@@ -224,7 +256,8 @@ router.get("/by-date-range", async (req, res) => {
         entry_fee_per_person: h.entry_fee_per_person || profile.entry_fee_per_person,
         entry_duration: h.entry_duration || profile.entry_duration || '2hr',
         is_active: !h.check_out_time,
-        orders: ordersByCustomer[h.customer_id] || []
+        // Only orders placed during this specific visit
+        orders: visitOrders
       };
     });
 
