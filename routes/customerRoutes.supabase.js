@@ -818,25 +818,41 @@ router.patch("/:id/renewal", async (req, res) => {
 router.patch("/:id/checkout", async (req, res) => {
   try {
     const { id } = req.params;
+    // finalPaymentMethod is provided by the frontend when the customer originally
+    // chose "pay_later" — staff selects cash or online at checkout time.
+    const { finalPaymentMethod } = req.body || {};
     const checkOutTime = new Date().toISOString();
 
     // Get current customer data before checkout
     const { data: currentCustomer, error: fetchError } = await supabase
       .from('customers')
-      .select('renewal_count')
+      .select('renewal_count, payment_method')
       .eq('id', id)
       .single();
 
     if (fetchError) throw fetchError;
 
-    // Update latest history entry with renewal_count and checkout time
+    // Resolve final payment method:
+    //   - If customer was pay_later and staff provided a method → use it
+    //   - Otherwise keep whatever was stored at check-in
+    const resolvedPaymentMethod = (currentCustomer.payment_method === 'pay_later' && finalPaymentMethod)
+      ? finalPaymentMethod
+      : currentCustomer.payment_method;
+
+    // Build history update payload
+    const historyUpdate = {
+      check_out_time: checkOutTime,
+      renewal_number: currentCustomer.renewal_count || 0,
+      is_renewal: (currentCustomer.renewal_count || 0) > 0,
+    };
+    if (resolvedPaymentMethod) {
+      historyUpdate.payment_method = resolvedPaymentMethod;
+    }
+
+    // Update latest open history entry
     const { error: historyError } = await supabase
       .from('customer_history')
-      .update({ 
-        check_out_time: checkOutTime,
-        renewal_number: currentCustomer.renewal_count || 0,
-        is_renewal: (currentCustomer.renewal_count || 0) > 0
-      })
+      .update(historyUpdate)
       .eq('customer_id', id)
       .is('check_out_time', null)
       .order('check_in_time', { ascending: false })
@@ -844,16 +860,20 @@ router.patch("/:id/checkout", async (req, res) => {
 
     if (historyError) throw historyError;
 
-    // Update customer - mark as checked out, keep renewal_count for billing reference
-    // renewal_count is preserved so billing/reports can read the actual renewal count
-    // It will be reset to 0 on next check-in (in the POST / route)
+    // Build customer update payload
+    const customerUpdate = {
+      is_active: false,
+      check_out_time: checkOutTime,
+      redeemable_credit: 0,
+    };
+    if (resolvedPaymentMethod) {
+      customerUpdate.payment_method = resolvedPaymentMethod;
+    }
+
+    // Update customer — mark as checked out
     const { data: customer, error: updateError } = await supabase
       .from('customers')
-      .update({
-        is_active: false,
-        check_out_time: checkOutTime,
-        redeemable_credit: 0
-      })
+      .update(customerUpdate)
       .eq('id', id)
       .select()
       .single();
@@ -866,6 +886,7 @@ router.patch("/:id/checkout", async (req, res) => {
     res.status(500).json({ error: "Failed to check out customer" });
   }
 });
+
 
 // Add order to customer
 router.post("/:id/orders", async (req, res) => {
