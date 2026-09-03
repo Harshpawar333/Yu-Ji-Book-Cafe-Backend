@@ -920,6 +920,111 @@ router.patch("/:id/checkout", async (req, res) => {
   }
 });
 
+// ─── PATCH /:id/payment-method — update customer's payment method ─────────────
+router.patch("/:id/payment-method", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { paymentMethod } = req.body;
+    if (!["cash", "online", "pay_later"].includes(paymentMethod)) {
+      return res.status(400).json({ error: "Invalid payment method" });
+    }
+
+    const { data: customer, error } = await supabase
+      .from("customers")
+      .update({ payment_method: paymentMethod })
+      .eq("id", id)
+      .select("*")
+      .single();
+
+    if (error) throw error;
+
+    // Also update history row for this session so reports are accurate
+    await supabase
+      .from("visit_history")
+      .update({ payment_method: paymentMethod })
+      .eq("customer_id", id)
+      .is("check_out_time", null); // only the open (active) session
+
+    res.json(transformToCamelCase(customer));
+  } catch (err) {
+    console.error("Error updating payment method:", err);
+    res.status(500).json({ error: "Failed to update payment method" });
+  }
+});
+
+// ─── DELETE /:id/orders/:orderId — cancel/delete an order (admin/superadmin) ──
+router.delete("/:id/orders/:orderId", async (req, res) => {
+  try {
+    const { id: customerId, orderId } = req.params;
+
+    // 1. Fetch the order to know redeemed amount to restore
+    const { data: order, error: orderFetchError } = await supabase
+      .from("orders")
+      .select("id, customer_id, redeemed, total, payable, payment_method")
+      .eq("id", orderId)
+      .eq("customer_id", customerId)
+      .single();
+
+    if (orderFetchError || !order) {
+      return res.status(404).json({ error: "Order not found" });
+    }
+
+    // 2. Delete order_items first (FK constraint)
+    const { error: itemsDeleteError } = await supabase
+      .from("order_items")
+      .delete()
+      .eq("order_id", orderId);
+
+    if (itemsDeleteError) throw itemsDeleteError;
+
+    // 3. Delete the order itself
+    const { error: orderDeleteError } = await supabase
+      .from("orders")
+      .delete()
+      .eq("id", orderId);
+
+    if (orderDeleteError) throw orderDeleteError;
+
+    // 4. Restore redeemed credit back to customer (if any credit was used)
+    const redeemedToRestore = order.redeemed || 0;
+    let updatedCustomer = null;
+    if (redeemedToRestore > 0) {
+      const { data: current } = await supabase
+        .from("customers")
+        .select("redeemable_credit")
+        .eq("id", customerId)
+        .single();
+
+      const restoredCredit = (current?.redeemable_credit || 0) + redeemedToRestore;
+
+      const { data: updated, error: updateError } = await supabase
+        .from("customers")
+        .update({ redeemable_credit: restoredCredit })
+        .eq("id", customerId)
+        .select(`*, orders(*, order_items(*))`)
+        .single();
+
+      if (updateError) throw updateError;
+      updatedCustomer = updated;
+    } else {
+      const { data: updated } = await supabase
+        .from("customers")
+        .select(`*, orders(*, order_items(*))`)
+        .eq("id", customerId)
+        .single();
+      updatedCustomer = updated;
+    }
+
+    res.json({
+      success: true,
+      creditRestored: redeemedToRestore,
+      customer: transformToCamelCase(updatedCustomer),
+    });
+  } catch (err) {
+    console.error("Error deleting order:", err);
+    res.status(500).json({ error: "Failed to delete order" });
+  }
+});
 
 // Add order to customer
 router.post("/:id/orders", async (req, res) => {
