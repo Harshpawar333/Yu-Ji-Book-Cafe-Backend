@@ -21,6 +21,7 @@ const membershipRoutes = require("./routes/membershipRoutes.supabase"); // Membe
 
 const authRoutes = require("./routes/auth");
 const userRoutes = require("./routes/userRoutes");
+const whatsappAuthRoutes = require("./routes/whatsappAuthRoutes");
 
 // Import middleware
 const errorHandler = require("./middlewares/errorHandler");
@@ -70,6 +71,7 @@ app.use("/api/memberships", membershipRoutes); // ✅ Membership + RFID
 // app.use("/api/integration", inventoryIntegrationRoutes); // POS-Inventory integration
 app.use("/api", authRoutes);
 app.use("/api/users", userRoutes);
+app.use("/api/auth", whatsappAuthRoutes); // WhatsApp Magic Link login
 
 // Health check with database status
 app.get("/api/health", async (req, res) => {
