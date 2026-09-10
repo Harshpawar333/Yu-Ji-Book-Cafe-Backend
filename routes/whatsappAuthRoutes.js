@@ -80,7 +80,8 @@ router.get("/whatsapp/status/:session_id", async (req, res) => {
     }
 
     // ✅ Verified — match phone to a staff user in the DB
-    const phone = data.phone; // E.164 e.g. "+917840985216"
+    // Normalize: strip all spaces so "+91 7840985216" and "+917840985216" both match
+    const phone = data.phone.replace(/\s+/g, ""); // E.164 e.g. "+917840985216"
 
     const { data: user, error } = await supabase
       .from("users")
